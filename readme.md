@@ -1,14 +1,17 @@
-# Indirect Reference Interval Estimation (Hoffmann Method)
+# LabRef Analyzer v2.0
 
-Bu proje, hastane laboratuvar sistemlerinden (LIS) alınan binlerce gerçek hasta verisini kullanarak, laboratuvar testleri için **Referans Aralıkları** (normal değerler) hesaplamak üzere geliştirilmiştir.
+Laboratuvar verilerinden (Big Data) otomatik referans aralığı belirleme aracı.
 
-## 🚀 Özellikler
-- **Saf Python:** R veya harici kütüphane bağımlılığı yoktur.
-- **Hoffmann Algoritması:** Verideki patolojik uç değerleri dışlayarak sağlıklı popülasyonu modeller.
-- **Interaktif Arayüz:** Streamlit ile kolay veri yükleme ve görselleştirme.
-- **Büyük Veri Desteği:** 50.000+ satırlık veri setlerini saniyeler içinde analiz eder.
+## 📁 Desteklenen Formatlar
+- **Excel:** `.xls`, `.xlsx`
+- **SPSS:** `.sav`
+- **Metin:** `.csv`
 
-## 🛠 Kurulum
-1. Depoyu klonlayın:
-   ```bash
-   git clone [https://github.com/kullanici_adiniz/TSH-RI-Finder.git](https://github.com/kullanici_adiniz/TSH-RI-Finder.git)
+## 🛠 Kullanılan Teknolojiler
+- **Streamlit:** Web arayüzü
+- **Pandas & Pyreadstat:** Çoklu format veri okuma
+- **Scipy:** Hoffmann istatistiksel modelleme
+- **Plotly:** İnteraktif grafikler
+
+## 🚀 Nasıl Çalışır?
+Uygulama, ham laboratuvar verilerini yüklediğinizde önce "Test İsmi" sütununa göre filtreleme yapar. Ardından seçilen testin değerlerini Hoffmann yöntemiyle (ve opsiyonel logaritmik dönüşümle) analiz ederek sağlıklı popülasyonu izole eder ve %95 güven aralığını hesaplar.
