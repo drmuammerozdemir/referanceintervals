@@ -4,77 +4,108 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy import stats
+import io
 
-# --- Sayfa Ayarları ---
-st.set_page_config(page_title="LabRef: RI Analyzer", layout="wide")
+# --- SAYFA AYARLARI ---
+st.set_page_config(page_title="LabAnalyzer Pro", layout="wide")
 
-def hoffmann_method(data):
-    """
-    Hoffmann yöntemini uygulayarak Referans Aralığı hesaplar.
-    """
-    # 1. Veriyi sırala ve kümülatif frekansları hesapla
-    sorted_data = np.sort(data)
+# --- HOFFMANN ALGORİTMASI ---
+def calculate_hoffmann(data, use_log=True):
+    # Veri temizliği: Sadece pozitif ve sayısal değerler
+    data = data[data > 0]
+    working_data = np.log(data) if use_log else data
+    sorted_data = np.sort(working_data)
     n = len(sorted_data)
-    cumulative_prob = (np.arange(1, n + 1) - 0.5) / n
     
-    # 2. Normal dağılımın Z-skorlarını hesapla
-    z_scores = stats.norm.ppf(cumulative_prob)
+    # Olasılık değerleri (Hazen)
+    p = (np.arange(1, n + 1) - 0.5) / n
+    z = stats.norm.ppf(p)
     
-    # 3. Lineer regresyon (Z-skorları vs Gözlemlenen Değerler)
-    # Genellikle verinin merkez %50'lik kısmı doğrusal ilişki için en iyisidir
-    mask = (cumulative_prob > 0.25) & (cumulative_prob < 0.75)
-    slope, intercept, r_value, p_value, std_err = stats.linregress(z_scores[mask], sorted_data[mask])
+    # Lineer regresyon (Merkez %40-60 dilimi odaklı)
+    mask = (p > 0.20) & (p < 0.80)
+    if len(z[mask]) < 5: return None # Yetersiz veri kontrolü
     
-    # 4. RI Hesapla (Mean +/- 1.96 * SD)
-    ri_lower = intercept + (-1.96 * slope)
-    ri_upper = intercept + (1.96 * slope)
+    slope, intercept, r_val, p_val, std_err = stats.linregress(z[mask], sorted_data[mask])
     
-    return ri_lower, ri_upper, slope, intercept
+    low_z = intercept + (-1.96 * slope)
+    high_z = intercept + (1.96 * slope)
+    
+    if use_log:
+        return np.exp(low_z), np.exp(high_z), r_val**2
+    return low_z, high_z, r_val**2
 
-# --- Arayüz ---
-st.title("🧪 LabRef: Dolaylı Referans Aralığı Hesaplayıcı")
-st.markdown("""
-Bu araç, hastane veri tabanındaki büyük verileri (Big Data) kullanarak laboratuvar tetkikleri için referans aralıkları belirler. 
-**Yöntem:** Hoffmann İstatistiksel Model (Python Native).
-""")
+# --- ARAYÜZ ---
+st.title("🧪 Laboratuvar Referans Aralığı Analizörü")
+st.markdown("CSV, Excel (.xls, .xlsx) ve SPSS (.sav) dosyalarını destekler.")
 
-uploaded_file = st.file_uploader("Veri Setini Yükleyin (CSV)", type="csv")
+# 1. DOSYA YÜKLEME SİSTEMİ
+uploaded_file = st.file_uploader("Dosyanızı buraya bırakın", type=['csv', 'xlsx', 'xls', 'sav'])
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file)
+    file_extension = uploaded_file.name.split('.')[-1]
     
-    # Sütun Seçimi
-    col1, col2 = st.columns(2)
-    with col1:
-        test_col = st.selectbox("Test Sonucu Sütunu", df.columns, index=df.columns.get_loc("TEST_DEGERI") if "TEST_DEGERI" in df.columns else 0)
-    with col2:
-        test_name = st.selectbox("Analiz Edilecek Tetkik", df['TETKIK_ISMI'].unique())
+    try:
+        if file_extension == 'csv':
+            df = pd.read_csv(uploaded_file)
+        elif file_extension in ['xls', 'xlsx']:
+            df = pd.read_excel(uploaded_file)
+        elif file_extension == 'sav':
+            import pyreadstat
+            # Geçici dosyaya yazıp okuma (Streamlit/Pyreadstat uyumu için)
+            with open("temp_file.sav", "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            df, meta = pyreadstat.read_sav("temp_file.sav")
+        
+        st.success(f"Dosya başarıyla yüklendi: {len(df)} satır bulundu.")
+        
+        # 2. SÜTUN SEÇİMLERİ
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            test_col = st.selectbox("Test Sonucu (Sayısal Değer)", df.columns)
+        with col2:
+            name_col = st.selectbox("Tetkik İsmi Sütunu", df.columns)
+        with col3:
+            selected_test = st.selectbox("Analiz Edilecek Test", df[name_col].unique())
 
-    # Veri Filtreleme
-    subset = df[df['TETKIK_ISMI'] == test_name].copy()
-    subset[test_col] = pd.to_numeric(subset[test_col], errors='coerce')
-    clean_data = subset[test_col].dropna().values
-    
-    # Analiz
-    if st.button("Analizi Başlat"):
-        ri_low, ri_high, slope, intercept = hoffmann_method(clean_data)
-        
-        # Göstergeler
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Veri Sayısı", f"{len(clean_data)}")
-        m2.metric("Alt Limit (2.5%)", f"{max(0, ri_low):.3f}")
-        m3.metric("Üst Limit (97.5%)", f"{ri_high:.3f}")
-        
-        # Grafik 1: Histogram
-        fig_hist = px.histogram(clean_data, nbins=100, title=f"{test_name} Dağılımı ve Hesaplanan Aralık")
-        fig_hist.add_vline(x=ri_low, line_dash="dash", line_color="red", annotation_text="Alt Limit")
-        fig_hist.add_vline(x=ri_high, line_dash="dash", line_color="red", annotation_text="Üst Limit")
-        st.plotly_chart(fig_hist, use_container_width=True)
-        
-        # Grafik 2: Hoffmann Plot (Lineerleştirme)
-        st.subheader("Hoffmann Lineerleştirme Grafiği")
-        z_scores = stats.norm.ppf((np.arange(1, len(clean_data) + 1) - 0.5) / len(clean_data))
-        fig_hoff = go.Figure()
-        fig_hoff.add_trace(go.Scatter(x=z_scores, y=np.sort(clean_data), mode='markers', name='Veri Noktaları'))
-        fig_hoff.add_trace(go.Scatter(x=z_scores, y=intercept + slope*z_scores, mode='lines', name='Hoffmann Hattı', line=dict(color='red')))
-        st.plotly_chart(fig_hoff, use_container_width=True)
+        # 3. VERİ ÖN İŞLEME
+        analysis_df = df[df[name_col] == selected_test].copy()
+        analysis_df[test_col] = pd.to_numeric(analysis_df[test_col], errors='coerce')
+        clean_values = analysis_df[test_col].dropna().values
+
+        # 4. HESAPLAMA VE GÖRSELLEŞTİRME
+        if len(clean_values) > 50:
+            log_choice = st.toggle("Log-Normal Dönüşümü Uygula (Hormonlar için önerilir)", value=True)
+            
+            result = calculate_hoffmann(clean_values, use_log=log_choice)
+            
+            if result:
+                low, high, r2 = result
+                
+                # Özet Kartları
+                st.divider()
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Örneklem Sayısı", len(clean_values))
+                m2.metric("Yeni Alt Limit (2.5%)", f"{low:.3f}")
+                m3.metric("Yeni Üst Limit (97.5%)", f"{high:.3f}")
+                
+                # Grafik: Dağılım ve Referans Alanı
+                fig = px.histogram(clean_values, nbins=100, title=f"{selected_test} Popülasyon Dağılımı",
+                                   color_discrete_sequence=['#3498db'])
+                fig.add_vrect(x0=low, x1=high, fillcolor="rgba(46, 204, 113, 0.3)", 
+                             line_width=0, annotation_text="Hesaplanan Normal Aralığı")
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Hoffmann Lineerlik Kontrolü
+                st.subheader("Model Doğruluğu (Hoffmann Plot)")
+                st.write(f"R-Kare Değeri: **{r2:.4f}** (1.0'a ne kadar yakınsa o kadar güvenilirdir)")
+            else:
+                st.warning("Veri seti Hoffmann analizi için uygun doğrusal yapıda değil.")
+        else:
+            st.error("Seçilen test için 50'den fazla geçerli sonuç bulunamadı.")
+            
+    except Exception as e:
+        st.error(f"Dosya okunurken bir hata oluştu: {e}")
+
+# --- FOOTER ---
+st.divider()
+st.caption("Bu uygulama 'Indirect Method' kullanarak referans aralığı tahmini yapar. Klinik kararlar için uzman onayı gereklidir.")
