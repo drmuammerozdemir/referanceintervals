@@ -6,6 +6,27 @@ from rpy2.robjects.packages import importr
 import rpy2.robjects as robjects
 from rpy2.robjects import pandas2ri
 
+# --- R PAKET KONTROLÜ VE KURULUMU ---
+def install_r_packages():
+    # R'ın 'utils' paketini yükle
+    utils = importr('utils')
+    utils.chooseCRANmirror(ind=1) # Bir ayna (mirror) seç
+    
+    # refineR yüklü mü kontrol et, değilse yükle
+    packnames = ('refineR',)
+    names_to_install = [x for x in packnames if not robjects.r.bool(robjects.r['require'](x)[0])]
+    
+    if names_to_install:
+        st.info(f"R paketi kuruluyor: {names_to_install}. Bu işlem bir kez yapılır ve biraz vakit alabilir...")
+        utils.install_packages(robjects.vectors.StrVector(names_to_install))
+
+# Uygulama başladığında kurulumu tetikle
+try:
+    install_r_packages()
+    refiner = importr('refineR')
+except Exception as e:
+    st.error(f"R paketleri yüklenirken hata oluştu: {e}")
+
 # R-Python veri dönüşümünü aktif et
 pandas2ri.activate()
 
