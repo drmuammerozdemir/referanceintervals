@@ -4,28 +4,47 @@ import numpy as np
 import plotly.express as px
 from scipy import stats
 
-# --- HOFFMANN FONKSİYONU ---
+# --- GELİŞMİŞ HOFFMANN FONKSİYONU ---
 def calculate_hoffmann(data, use_log=True):
+    if len(data) < 20: return None
+    
     data = data[data > 0]
     working_data = np.log(data) if use_log else data
     sorted_data = np.sort(working_data)
     n = len(sorted_data)
+    
     p = (np.arange(1, n + 1) - 0.5) / n
     z = stats.norm.ppf(p)
+    
+    # Lineer regresyon (Merkez %40-60 dilimi odaklı)
     mask = (p > 0.20) & (p < 0.80)
     if len(z[mask]) < 5: return None
+    
     slope, intercept, r_val, _, _ = stats.linregress(z[mask], sorted_data[mask])
+    
+    # RI Hesaplama: Mean +/- 1.96 * SD
     low_z = intercept + (-1.96 * slope)
     high_z = intercept + (1.96 * slope)
-    return (np.exp(low_z), np.exp(high_z), r_val**2) if use_log else (low_z, high_z, r_val**2)
+    
+    # İstatistiksel parametreler
+    # Log-normal durumda geometrik ortalama ve SD yaklaşımları kullanılır
+    res = {
+        "low": np.exp(low_z) if use_log else low_z,
+        "high": np.exp(high_z) if use_log else high_z,
+        "r2": r_val**2,
+        "n": n,
+        "mean": np.exp(intercept) if use_log else intercept,
+        "sd": np.exp(slope) if use_log else slope # Log-SD (Dağılım genişliği)
+    }
+    return res
 
-st.set_page_config(page_title="LabRef Pro", layout="wide")
-st.title("🧪 Laboratuvar Referans Aralığı Analizörü")
+st.set_page_config(page_title="LabRef Pro: Multi-Group Analyzer", layout="wide")
+st.title("🔬 Gelişmiş Referans Aralığı Analiz Paneli")
 
-uploaded_file = st.file_uploader("Dosya Yükleyin (.xlsx, .xls, .csv, .sav)", type=['csv', 'xlsx', 'xls', 'sav'])
+uploaded_file = st.file_uploader("Veri Setini Yükleyin (.xlsx, .csv, .sav)", type=['csv', 'xlsx', 'xls', 'sav'])
 
 if uploaded_file:
-    # Dosya okuma (Önceki versiyondaki gibi)
+    # Veri Okuma
     ext = uploaded_file.name.split('.')[-1]
     if ext == 'csv': df = pd.read_csv(uploaded_file)
     elif ext in ['xls', 'xlsx']: df = pd.read_excel(uploaded_file)
@@ -34,51 +53,78 @@ if uploaded_file:
         with open("temp.sav", "wb") as f: f.write(uploaded_file.getbuffer())
         df, _ = pyreadstat.read_sav("temp.sav")
 
-    # --- SÜTUN SEÇİMİ ---
-    c1, c2, c3 = st.columns(3)
-    with c1: test_col = st.selectbox("Test Sonucu (Sayısal Değer)", df.columns, index=df.columns.get_loc("TEST_DEGERI") if "TEST_DEGERI" in df.columns else 0)
-    with c2: name_col = st.selectbox("Tetkik İsmi Sütunu", df.columns, index=df.columns.get_loc("TETKIK_ISMI") if "TETKIK_ISMI" in df.columns else 0)
-    with c3: selected_test = st.selectbox("Analiz Edilecek Test", df[name_col].unique())
-
-    # --- VERİ TEMİZLEME ÖZETİ (YENİ BÖLÜM) ---
-    st.subheader("📊 Veri Temizleme Özeti")
+    # --- FİLTRELEME PANELİ ---
+    st.sidebar.header("🔍 Analiz Filtreleri")
     
-    # Ham veriyi işle
-    raw_subset = df[df[name_col] == selected_test].copy()
-    total_raw = len(raw_subset)
+    test_col = st.sidebar.selectbox("Test Sonucu Sütunu", df.columns, index=df.columns.get_loc("TEST_DEGERI") if "TEST_DEGERI" in df.columns else 0)
+    name_col = st.sidebar.selectbox("Tetkik İsmi Sütunu", df.columns, index=df.columns.get_loc("TETKIK_ISMI") if "TETKIK_ISMI" in df.columns else 0)
+    selected_test = st.sidebar.selectbox("Test Seçin", df[name_col].unique())
     
-    # Sayıya çevirme (Virgül/Nokta temizliği dahil)
-    if raw_subset[test_col].dtype == object:
-        raw_subset[test_col] = raw_subset[test_col].str.replace(',', '.', regex=False)
+    st.sidebar.divider()
     
-    raw_subset['numeric_val'] = pd.to_numeric(raw_subset[test_col], errors='coerce')
+    # Cinsiyet Seçimi
+    cinsiyet_opsiyon = df['CINSIYET'].unique().tolist()
+    selected_genders = st.sidebar.multiselect("Cinsiyet Filtresi", options=cinsiyet_opsiyon, default=cinsiyet_opsiyon)
     
-    valid_data = raw_subset[raw_subset['numeric_val'] > 0].dropna(subset=['numeric_val'])
-    total_valid = len(valid_data)
-    lost_data = total_raw - total_valid
+    # Yaş Aralığı (Manuel Giriş)
+    st.sidebar.write("Yaş Aralığı")
+    age_col = "YASI" if "YASI" in df.columns else df.columns[0]
+    col_a1, col_a2 = st.sidebar.columns(2)
+    min_age = col_a1.number_input("Min Yaş", value=0)
+    max_age = col_a2.number_input("Max Yaş", value=120)
 
-    # Özet Kartları
-    v1, v2, v3 = st.columns(3)
-    v1.metric("Toplam Ham Veri", f"{total_raw} satır")
-    v2.metric("Hatalı/Eksik Veri (Elenen)", f"{lost_data} satır", delta_color="inverse")
-    v3.metric("Analize Hazır Veri", f"{total_valid} satır")
+    # --- VERİ İŞLEME ---
+    mask = (df[name_col] == selected_test) & \
+           (df['CINSIYET'].isin(selected_genders)) & \
+           (df[age_col] >= min_age) & \
+           (df[age_col] <= max_age)
+    
+    working_df = df[mask].copy()
+    
+    # Sayısal Temizlik
+    if working_df[test_col].dtype == object:
+        working_df[test_col] = working_df[test_col].str.replace(',', '.', regex=False)
+    working_df['val'] = pd.to_numeric(working_df[test_col], errors='coerce')
+    clean_values = working_df[working_df['val'] > 0]['val'].dropna().values
 
-    if lost_data > 0:
-        st.warning(f"⚠️ Dikkat: {lost_data} adet veri sayısal olmadığı veya sıfırdan küçük olduğu için analiz dışı bırakıldı. (Örn: <0.01, Metinler veya boş hücreler)")
+    # --- ANA EKRAN ---
+    st.subheader(f"📊 Analiz Raporu: {selected_test}")
+    st.write(f"**Filtre:** {', '.join(selected_genders)} | Yaş: {min_age}-{max_age}")
 
-    # --- HESAPLAMA ---
-    if total_valid > 50:
-        log_on = st.toggle("Log-Normal Dönüşüm", value=True)
-        res = calculate_hoffmann(valid_data['numeric_val'].values, use_log=log_on)
+    if len(clean_values) > 20:
+        log_on = st.checkbox("Log-Normal Dönüşüm Uygula", value=True)
+        res = calculate_hoffmann(clean_values, use_log=log_on)
         
         if res:
-            low, high, r2 = res
-            st.divider()
-            st.success(f"**Hesaplanan Referans Aralığı: {low:.3f} - {high:.3f}** (R²: {r2:.4f})")
-            
             # Grafik
-            fig = px.histogram(valid_data['numeric_val'], nbins=100, title="Filtrelenmiş Veri Dağılımı")
-            fig.add_vrect(x0=low, x1=high, fillcolor="green", opacity=0.2, annotation_text="RI")
+            fig = px.histogram(clean_values, nbins=100, title="Seçilen Grubun Dağılımı")
+            fig.add_vrect(x0=res['low'], x1=res['high'], fillcolor="green", opacity=0.2, annotation_text="Ref. Aralığı")
             st.plotly_chart(fig, use_container_width=True)
+            
+            # AKADEMİK ÖZET TABLOSU
+            st.divider()
+            st.subheader("📋 Akademik Sonuç Tablosu")
+            
+            # Tablo verisini hazırla
+            summary_data = {
+                "Parametre": ["Alt Limit (2.5%)", "Üst Limit (97.5%)", "R² (Model Uyumu)", "Örnek Sayısı (n)", "Ortalama (Modellenen)", "Standart Sapma"],
+                "Değer": [
+                    f"{res['low']:.4f}", 
+                    f"{res['high']:.4f}", 
+                    f"{res['r2']:.4f}", 
+                    f"{int(res['n'])}", 
+                    f"{res['mean']:.4f}", 
+                    f"{res['sd']:.4f}"
+                ]
+            }
+            summary_df = pd.DataFrame(summary_data)
+            st.table(summary_df)
+            
+            # CSV İndirme Butonu (Makale için tabloyu dışa aktarma)
+            csv = summary_df.to_csv(index=False).encode('utf-8')
+            st.download_button("Tabloyu Excel/CSV Olarak İndir", csv, f"RI_Sonuc_{selected_test}.csv", "text/csv")
+
+        else:
+            st.error("Model bu veri grubu için yakınsayamadı. Lütfen veri miktarını veya filtreleri kontrol edin.")
     else:
-        st.error("Seçilen test için 50'den fazla geçerli sonuç bulunamadı. Lütfen 'Test Sonucu' sütununun doğru seçildiğinden emin olun.")
+        st.warning(f"Seçilen kriterlere göre sadece {len(clean_values)} veri bulundu. Analiz için en az 20-50 veri gereklidir.")
