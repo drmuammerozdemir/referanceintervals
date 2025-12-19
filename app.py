@@ -2,110 +2,83 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 from scipy import stats
-import io
 
-# --- SAYFA AYARLARI ---
-st.set_page_config(page_title="LabAnalyzer Pro", layout="wide")
-
-# --- HOFFMANN ALGORİTMASI ---
+# --- HOFFMANN FONKSİYONU ---
 def calculate_hoffmann(data, use_log=True):
-    # Veri temizliği: Sadece pozitif ve sayısal değerler
     data = data[data > 0]
     working_data = np.log(data) if use_log else data
     sorted_data = np.sort(working_data)
     n = len(sorted_data)
-    
-    # Olasılık değerleri (Hazen)
     p = (np.arange(1, n + 1) - 0.5) / n
     z = stats.norm.ppf(p)
-    
-    # Lineer regresyon (Merkez %40-60 dilimi odaklı)
     mask = (p > 0.20) & (p < 0.80)
-    if len(z[mask]) < 5: return None # Yetersiz veri kontrolü
-    
-    slope, intercept, r_val, p_val, std_err = stats.linregress(z[mask], sorted_data[mask])
-    
+    if len(z[mask]) < 5: return None
+    slope, intercept, r_val, _, _ = stats.linregress(z[mask], sorted_data[mask])
     low_z = intercept + (-1.96 * slope)
     high_z = intercept + (1.96 * slope)
-    
-    if use_log:
-        return np.exp(low_z), np.exp(high_z), r_val**2
-    return low_z, high_z, r_val**2
+    return (np.exp(low_z), np.exp(high_z), r_val**2) if use_log else (low_z, high_z, r_val**2)
 
-# --- ARAYÜZ ---
+st.set_page_config(page_title="LabRef Pro", layout="wide")
 st.title("🧪 Laboratuvar Referans Aralığı Analizörü")
-st.markdown("CSV, Excel (.xls, .xlsx) ve SPSS (.sav) dosyalarını destekler.")
 
-# 1. DOSYA YÜKLEME SİSTEMİ
-uploaded_file = st.file_uploader("Dosyanızı buraya bırakın", type=['csv', 'xlsx', 'xls', 'sav'])
+uploaded_file = st.file_uploader("Dosya Yükleyin (.xlsx, .xls, .csv, .sav)", type=['csv', 'xlsx', 'xls', 'sav'])
 
 if uploaded_file:
-    file_extension = uploaded_file.name.split('.')[-1]
+    # Dosya okuma (Önceki versiyondaki gibi)
+    ext = uploaded_file.name.split('.')[-1]
+    if ext == 'csv': df = pd.read_csv(uploaded_file)
+    elif ext in ['xls', 'xlsx']: df = pd.read_excel(uploaded_file)
+    elif ext == 'sav':
+        import pyreadstat
+        with open("temp.sav", "wb") as f: f.write(uploaded_file.getbuffer())
+        df, _ = pyreadstat.read_sav("temp.sav")
+
+    # --- SÜTUN SEÇİMİ ---
+    c1, c2, c3 = st.columns(3)
+    with c1: test_col = st.selectbox("Test Sonucu (Sayısal Değer)", df.columns, index=df.columns.get_loc("TEST_DEGERI") if "TEST_DEGERI" in df.columns else 0)
+    with c2: name_col = st.selectbox("Tetkik İsmi Sütunu", df.columns, index=df.columns.get_loc("TETKIK_ISMI") if "TETKIK_ISMI" in df.columns else 0)
+    with c3: selected_test = st.selectbox("Analiz Edilecek Test", df[name_col].unique())
+
+    # --- VERİ TEMİZLEME ÖZETİ (YENİ BÖLÜM) ---
+    st.subheader("📊 Veri Temizleme Özeti")
     
-    try:
-        if file_extension == 'csv':
-            df = pd.read_csv(uploaded_file)
-        elif file_extension in ['xls', 'xlsx']:
-            df = pd.read_excel(uploaded_file)
-        elif file_extension == 'sav':
-            import pyreadstat
-            # Geçici dosyaya yazıp okuma (Streamlit/Pyreadstat uyumu için)
-            with open("temp_file.sav", "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            df, meta = pyreadstat.read_sav("temp_file.sav")
+    # Ham veriyi işle
+    raw_subset = df[df[name_col] == selected_test].copy()
+    total_raw = len(raw_subset)
+    
+    # Sayıya çevirme (Virgül/Nokta temizliği dahil)
+    if raw_subset[test_col].dtype == object:
+        raw_subset[test_col] = raw_subset[test_col].str.replace(',', '.', regex=False)
+    
+    raw_subset['numeric_val'] = pd.to_numeric(raw_subset[test_col], errors='coerce')
+    
+    valid_data = raw_subset[raw_subset['numeric_val'] > 0].dropna(subset=['numeric_val'])
+    total_valid = len(valid_data)
+    lost_data = total_raw - total_valid
+
+    # Özet Kartları
+    v1, v2, v3 = st.columns(3)
+    v1.metric("Toplam Ham Veri", f"{total_raw} satır")
+    v2.metric("Hatalı/Eksik Veri (Elenen)", f"{lost_data} satır", delta_color="inverse")
+    v3.metric("Analize Hazır Veri", f"{total_valid} satır")
+
+    if lost_data > 0:
+        st.warning(f"⚠️ Dikkat: {lost_data} adet veri sayısal olmadığı veya sıfırdan küçük olduğu için analiz dışı bırakıldı. (Örn: <0.01, Metinler veya boş hücreler)")
+
+    # --- HESAPLAMA ---
+    if total_valid > 50:
+        log_on = st.toggle("Log-Normal Dönüşüm", value=True)
+        res = calculate_hoffmann(valid_data['numeric_val'].values, use_log=log_on)
         
-        st.success(f"Dosya başarıyla yüklendi: {len(df)} satır bulundu.")
-        
-        # 2. SÜTUN SEÇİMLERİ
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            test_col = st.selectbox("Test Sonucu (Sayısal Değer)", df.columns)
-        with col2:
-            name_col = st.selectbox("Tetkik İsmi Sütunu", df.columns)
-        with col3:
-            selected_test = st.selectbox("Analiz Edilecek Test", df[name_col].unique())
-
-        # 3. VERİ ÖN İŞLEME
-        analysis_df = df[df[name_col] == selected_test].copy()
-        analysis_df[test_col] = pd.to_numeric(analysis_df[test_col], errors='coerce')
-        clean_values = analysis_df[test_col].dropna().values
-
-        # 4. HESAPLAMA VE GÖRSELLEŞTİRME
-        if len(clean_values) > 50:
-            log_choice = st.toggle("Log-Normal Dönüşümü Uygula (Hormonlar için önerilir)", value=True)
+        if res:
+            low, high, r2 = res
+            st.divider()
+            st.success(f"**Hesaplanan Referans Aralığı: {low:.3f} - {high:.3f}** (R²: {r2:.4f})")
             
-            result = calculate_hoffmann(clean_values, use_log=log_choice)
-            
-            if result:
-                low, high, r2 = result
-                
-                # Özet Kartları
-                st.divider()
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Örneklem Sayısı", len(clean_values))
-                m2.metric("Yeni Alt Limit (2.5%)", f"{low:.3f}")
-                m3.metric("Yeni Üst Limit (97.5%)", f"{high:.3f}")
-                
-                # Grafik: Dağılım ve Referans Alanı
-                fig = px.histogram(clean_values, nbins=100, title=f"{selected_test} Popülasyon Dağılımı",
-                                   color_discrete_sequence=['#3498db'])
-                fig.add_vrect(x0=low, x1=high, fillcolor="rgba(46, 204, 113, 0.3)", 
-                             line_width=0, annotation_text="Hesaplanan Normal Aralığı")
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Hoffmann Lineerlik Kontrolü
-                st.subheader("Model Doğruluğu (Hoffmann Plot)")
-                st.write(f"R-Kare Değeri: **{r2:.4f}** (1.0'a ne kadar yakınsa o kadar güvenilirdir)")
-            else:
-                st.warning("Veri seti Hoffmann analizi için uygun doğrusal yapıda değil.")
-        else:
-            st.error("Seçilen test için 50'den fazla geçerli sonuç bulunamadı.")
-            
-    except Exception as e:
-        st.error(f"Dosya okunurken bir hata oluştu: {e}")
-
-# --- FOOTER ---
-st.divider()
-st.caption("Bu uygulama 'Indirect Method' kullanarak referans aralığı tahmini yapar. Klinik kararlar için uzman onayı gereklidir.")
+            # Grafik
+            fig = px.histogram(valid_data['numeric_val'], nbins=100, title="Filtrelenmiş Veri Dağılımı")
+            fig.add_vrect(x0=low, x1=high, fillcolor="green", opacity=0.2, annotation_text="RI")
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.error("Seçilen test için 50'den fazla geçerli sonuç bulunamadı. Lütfen 'Test Sonucu' sütununun doğru seçildiğinden emin olun.")
