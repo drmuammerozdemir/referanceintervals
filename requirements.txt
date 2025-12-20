@@ -1,6 +1,6 @@
 streamlit
 pandas
-rpy2
+rpy2 >= 3.5.1
 numpy
 scipy
 plotly
